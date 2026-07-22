@@ -129,6 +129,8 @@
         .btn-role-admin:hover { background-color: #d0e8fd; }
         .btn-role-user { background-color: #e8f5e9; color: #1b5e20; border-color: #c8e6c9; }
         .btn-role-user:hover { background-color: #dcedd5; }
+        .btn-role-super { background-color: #fdecea; color: #7d1a13; border-color: #f5c6c0; }
+        .btn-role-super:hover { background-color: #fbdcd8; }
 
         .btn-password { background-color: #ffc107; color: #212529; }
         .btn-password:hover { background-color: #e0a800; }
@@ -393,6 +395,7 @@
                                 <select id="new-role" required>
                                     <option value="User">Usuario Normal</option>
                                     <option value="Admin">Administrador</option>
+                                    <option value="SuperAdmin">Super Usuario</option>
                                 </select>
                             </div>
                             <button type="submit">Crear Usuario</button>
@@ -511,6 +514,16 @@
         let mapaTop10Ventas = {}; 
         let maestroPoliticas = {}; // clave: 'proveedor||laboratorio' (lowercase) → { meses, observaciones }
         let usuarioActual = null;
+
+        // Helpers de permisos por rol.
+        // "SuperAdmin" hereda todo lo que puede hacer "Admin", más la
+        // posibilidad exclusiva de eliminar registros de vencidos.
+        function esAdminOSuperior(u) {
+            return !!(u && (u.rol === 'Admin' || u.rol === 'SuperAdmin'));
+        }
+        function esSuperUsuario(u) {
+            return !!(u && u.rol === 'SuperAdmin');
+        }
         let globalVencidos = [];
 
         // BASE DE DATOS ACTUALIZADA CON EL LISTADO COMPLETO DE PROVEEDORES / VIÑETAS COMERCIALES
@@ -1203,20 +1216,20 @@
                 document.getElementById('current-user-display').innerText = cuenta.usuario;
                 document.getElementById('current-role-display').innerText = cuenta.rol;
 
-                if (cuenta.rol === 'Admin') {
+                if (esAdminOSuperior(cuenta)) {
                     document.getElementById('admin-panel').style.display = 'block';
                     document.getElementById('admin-export-section').style.display = 'block';
                     document.getElementById('admin-filters-container').style.display = 'flex';
-                    document.getElementById('th-acciones-reporte').style.display = 'table-cell';
                     document.getElementById('tip-modal-msg').style.display = 'block';
                     actualizarTablaUsuarios();
                 } else {
                     document.getElementById('admin-panel').style.display = 'none';
                     document.getElementById('admin-export-section').style.display = 'none';
                     document.getElementById('admin-filters-container').style.display = 'none';
-                    document.getElementById('th-acciones-reporte').style.display = 'none';
                     document.getElementById('tip-modal-msg').style.display = 'none';
                 }
+                // La columna "Acciones" (eliminar registro) solo la ve el Super Usuario.
+                document.getElementById('th-acciones-reporte').style.display = esSuperUsuario(cuenta) ? 'table-cell' : 'none';
                 actualizarSelectProveedores();
                 actualizarTablaReporte();
 
@@ -1329,7 +1342,7 @@
         function actualizarTablaReporte() {
             let listaVisualizacion = [...globalVencidos];
             if (usuarioActual) {
-                if (usuarioActual.rol === 'Admin') {
+                if (esAdminOSuperior(usuarioActual)) {
                     listaVisualizacion = filtrarLista(listaVisualizacion);
                 } else {
                     listaVisualizacion = listaVisualizacion.filter(item => item.usuario && String(item.usuario).toLowerCase() === usuarioActual.usuario.toLowerCase());
@@ -1344,9 +1357,9 @@
             listaVisualizacion.forEach(item => {
               try {
                 const tr = document.createElement('tr');
-                let celdaAcciones = usuarioActual && usuarioActual.rol === 'Admin' ? `<td><button class="btn-delete-item" onclick='eliminarRegistroVencido(${item.id})'>Eliminar</button></td>` : '';
+                let celdaAcciones = esSuperUsuario(usuarioActual) ? `<td><button class="btn-delete-item" onclick='eliminarRegistroVencido(${item.id})'>Eliminar</button></td>` : '';
                 const productoEscapado = String(item.producto || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                let productoHTML = usuarioActual && usuarioActual.rol === 'Admin' ? `<strong class="clickable-product" onclick="verTop10Ventas('${productoEscapado}')">${item.producto}</strong>` : `<strong>${item.producto}</strong>`;
+                let productoHTML = esAdminOSuperior(usuarioActual) ? `<strong class="clickable-product" onclick="verTop10Ventas('${productoEscapado}')">${item.producto}</strong>` : `<strong>${item.producto}</strong>`;
 
                 let ventaHistoricaSucursal = 0;
                 if (mapaTop10Ventas[item.producto]) {
@@ -1414,7 +1427,7 @@
         }
 
         function verTop10Ventas(nombreProducto) {
-            if (usuarioActual && usuarioActual.rol !== 'Admin') return;
+            if (usuarioActual && !esAdminOSuperior(usuarioActual)) return;
             document.getElementById('modal-producto-titulo').innerText = nombreProducto;
             const subText = document.getElementById('modal-producto-sub');
             const tbody = document.querySelector('#modal-top10-table tbody');
@@ -1437,7 +1450,10 @@
         function cerrarModal() { document.getElementById('top10-modal').style.display = 'none'; }
 
         function eliminarRegistroVencido(id) {
-            if (usuarioActual && usuarioActual.rol !== 'Admin') return;
+            if (!esSuperUsuario(usuarioActual)) {
+                alert("⚠️ Solo un Super Usuario puede eliminar registros.");
+                return;
+            }
             if (confirm("¿Eliminar este producto?")) {
                 globalVencidos = globalVencidos.filter(item => item.id !== id);
                 localStorage.setItem('vencidos', JSON.stringify(globalVencidos));
@@ -1449,7 +1465,7 @@
         }
 
         function exportarAReporteExcelAvanzado() {
-            if (usuarioActual && usuarioActual.rol !== 'Admin') return;
+            if (usuarioActual && !esAdminOSuperior(usuarioActual)) return;
             let listaVencidos = [...globalVencidos];
             listaVencidos = filtrarLista(listaVencidos);
 
@@ -1489,7 +1505,7 @@
         }
 
         function generarBackupSistema() {
-            if (usuarioActual && usuarioActual.rol !== 'Admin') return;
+            if (usuarioActual && !esAdminOSuperior(usuarioActual)) return;
             const estructura = { vencidos: globalVencidos, usuarios: usuariosCache, catalogo: listadoProductos, mapaTop10Ventas, mapaProductosLaboratorios, maestroPoliticas };
             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(estructura, null, 2));
             const a = document.createElement('a'); a.setAttribute("href", dataStr); a.setAttribute("download", `Backup_Sistema_Vencidos.json`); a.click();
@@ -1514,18 +1530,24 @@
 
             usuariosCache.forEach((u, index) => {
                 const tr = document.createElement('tr');
-                let claseBotonRol = u.rol === 'Admin' ? 'btn-role-admin' : 'btn-role-user';
-                tr.innerHTML = `<td><strong>${u.usuario}</strong></td><td style="text-align: center;"><button class="btn-role-toggle ${claseBotonRol}" onclick="toggleAdminRole(${index})">${u.rol}</button></td><td style="text-align: right;"><button class="btn-action btn-password" onclick="cambiarClaveUsuario(${index})">🔑 Clave</button> <button class="btn-delete-item" onclick="eliminarUsuario(${index})">🗑️</button></td>`;
+                let claseBotonRol = u.rol === 'SuperAdmin' ? 'btn-role-super' : (u.rol === 'Admin' ? 'btn-role-admin' : 'btn-role-user');
+                let etiquetaRol = u.rol === 'SuperAdmin' ? 'Super Usuario' : (u.rol === 'Admin' ? 'Admin' : 'User');
+                tr.innerHTML = `<td><strong>${u.usuario}</strong></td><td style="text-align: center;"><button class="btn-role-toggle ${claseBotonRol}" onclick="toggleAdminRole(${index})">${etiquetaRol}</button></td><td style="text-align: right;"><button class="btn-action btn-password" onclick="cambiarClaveUsuario(${index})">🔑 Clave</button> <button class="btn-delete-item" onclick="eliminarUsuario(${index})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
 
+        // Cicla el rol de un usuario: User -> Admin -> Super Usuario -> User ...
         async function toggleAdminRole(index) {
             const usuario = usuariosCache[index];
             if (usuarioActual && usuarioActual.usuario.toLowerCase() === usuario.usuario.toLowerCase()) {
-                alert("⚠️ No puedes revocar tus propios permisos de Administrador estando en sesión."); return;
+                alert("⚠️ No puedes cambiar tu propio rol estando en sesión."); return;
             }
-            const nuevoRol = (usuario.rol === 'Admin') ? 'User' : 'Admin';
+            let nuevoRol;
+            if (usuario.rol === 'User') nuevoRol = 'Admin';
+            else if (usuario.rol === 'Admin') nuevoRol = 'SuperAdmin';
+            else nuevoRol = 'User';
+
             await enviarAccionUsuarioASheets({ action: "actualizarRolUsuario", usuario: usuario.usuario, rol: nuevoRol });
             actualizarTablaReporte();
         }
@@ -1558,12 +1580,18 @@
                 const usuarios = await respuesta.json();
                 if (Array.isArray(usuarios)) {
                     // Normalizamos espacios y mayúsculas para que no falle la comparación
-                    // de rol ("Admin"/"User") por diferencias al escribir en el Sheet.
-                    usuariosCache = usuarios.map(u => ({
-                        usuario: String(u.usuario || '').trim(),
-                        contrasena: String(u.contrasena !== undefined && u.contrasena !== null ? u.contrasena : '').trim(),
-                        rol: String(u.rol || '').trim().toLowerCase() === 'admin' ? 'Admin' : 'User'
-                    }));
+                    // de rol ("Admin"/"User"/"SuperAdmin") por diferencias al escribir en el Sheet.
+                    usuariosCache = usuarios.map(u => {
+                        const rolNormalizado = String(u.rol || '').trim().toLowerCase();
+                        let rol = 'User';
+                        if (rolNormalizado === 'superadmin' || rolNormalizado === 'super usuario' || rolNormalizado === 'super') rol = 'SuperAdmin';
+                        else if (rolNormalizado === 'admin') rol = 'Admin';
+                        return {
+                            usuario: String(u.usuario || '').trim(),
+                            contrasena: String(u.contrasena !== undefined && u.contrasena !== null ? u.contrasena : '').trim(),
+                            rol: rol
+                        };
+                    });
                 }
             } catch (error) {
                 console.error("No se pudo cargar la lista de usuarios desde Sheets:", error);
@@ -1601,7 +1629,7 @@
                 headers: {
                     "Content-Type": "application/json"
                 },
-                body: JSON.stringify({ action: "eliminar", id: id })
+                body: JSON.stringify({ action: "eliminar", id: id, solicitante: usuarioActual ? usuarioActual.usuario : "" })
             })
             .then(() => {
                 console.log("Registro eliminado también en Google Sheets.");
