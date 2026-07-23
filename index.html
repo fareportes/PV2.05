@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Carga Masiva Proximos a V - Sistema de Gestión</title>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         :root {
             --primary-color: #0056b3;
@@ -392,11 +393,16 @@
                             </div>
                             <div class="form-group">
                                 <label for="new-role">Rol Inicial:</label>
-                                <select id="new-role" required>
+                                <select id="new-role" required onchange="actualizarVisibilidadFANuevoUsuario()">
                                     <option value="User">Usuario Normal</option>
                                     <option value="Admin">Administrador</option>
                                     <option value="SuperAdmin">Super Usuario</option>
                                 </select>
+                            </div>
+                            <div class="form-group" id="new-fa-group">
+                                <label for="new-fa">FA Asignada:</label>
+                                <input type="text" id="new-fa" list="sucursales-list" placeholder="Ej: FA01">
+                                <small style="color:#6c757d;">El usuario solo podrá ver y registrar en esta FA.</small>
                             </div>
                             <button type="submit">Crear Usuario</button>
                         </form>
@@ -408,6 +414,7 @@
                                     <tr>
                                         <th>Usuario</th>
                                         <th style="text-align: center; width: 110px;">Permisos</th>
+                                        <th style="text-align: center; width: 90px;">FA</th>
                                         <th style="text-align: right;">Acciones de Cuenta</th>
                                     </tr>
                                 </thead>
@@ -512,21 +519,78 @@
         let listadoProductos = [];
         let mapaProductosLaboratorios = {}; 
         let mapaTop10Ventas = {}; 
-        let maestroPoliticas = {}; // clave: 'proveedor||laboratorio' (lowercase) → { meses, observaciones }
+        let maestroPoliticas = {}; 
         let usuarioActual = null;
+        let globalVencidos = [];
 
-        // Helpers de permisos por rol.
-        // "SuperAdmin" hereda todo lo que puede hacer "Admin", más la
-        // posibilidad exclusiva de eliminar registros de vencidos.
+        // ── MÓDULO DE INDEXEDDB PARA CACHÉ MASIVA DE VENTAS (+240k registros) ──
+        const DB_NAME = "ControlVencidosDB";
+        const STORE_NAME = "ventasCache";
+        const DB_VERSION = 1;
+
+        function abrirDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = function(event) {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME);
+                    }
+                };
+                request.onsuccess = (event) => resolve(event.target.result);
+                request.onerror = (event) => reject(event.target.error);
+            });
+        }
+
+        async function guardarEnCacheVentas(dataRegistros) {
+            const db = await abrirDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(STORE_NAME, "readwrite");
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.put(dataRegistros, "datosVentas");
+                request.onsuccess = () => resolve(true);
+                request.onerror = (e) => reject(e.target.error);
+            });
+        }
+
+        async function obtenerDeCacheVentas() {
+            try {
+                const db = await abrirDB();
+                return new Promise((resolve, reject) => {
+                    const transaction = db.transaction(STORE_NAME, "readonly");
+                    const store = transaction.objectStore(STORE_NAME);
+                    const request = store.get("datosVentas");
+                    request.onsuccess = (e) => resolve(e.target.result || null);
+                    request.onerror = (e) => reject(e.target.error);
+                });
+            } catch (error) {
+                console.error("Error al leer IndexedDB:", error);
+                return null;
+            }
+        }
+        // ──────────────────────────────────────────────────────────────────────
+
         function esAdminOSuperior(u) {
             return !!(u && (u.rol === 'Admin' || u.rol === 'SuperAdmin'));
         }
         function esSuperUsuario(u) {
             return !!(u && u.rol === 'SuperAdmin');
         }
-        let globalVencidos = [];
 
-        // BASE DE DATOS ACTUALIZADA CON EL LISTADO COMPLETO DE PROVEEDORES / VIÑETAS COMERCIALES
+        // El campo FA es obligatorio para Admin y User (quedan atados a esa FA).
+        // Para Super Usuario es opcional, ya que puede ver y crear en todas.
+        function actualizarVisibilidadFANuevoUsuario() {
+            const rol = document.getElementById('new-role').value;
+            const inputFA = document.getElementById('new-fa');
+            if (rol === 'SuperAdmin') {
+                inputFA.required = false;
+                document.getElementById('new-fa-group').style.opacity = '0.6';
+            } else {
+                inputFA.required = true;
+                document.getElementById('new-fa-group').style.opacity = '1';
+            }
+        }
+
         const listaVinetasFijas = [
             "AldoUnion", "Andifar", "Calox", "Chalver", "Corfarma", "DINSULA",
             "Dromeinter", "DrogFrancesa", "DrogGuardado", "DrogHasther", "DrogRejuwe", "DrogUniversal",
@@ -556,6 +620,7 @@
             }
         }
         generarListadoSucursales();
+        actualizarVisibilidadFANuevoUsuario();
 
         function actualizarDatalistEnPantalla() {
             document.getElementById('total-products-msg').innerText = listadoProductos.length > 0 ? `Catálogo actual: ${listadoProductos.length} productos listos.` : "Catálogo vacío. Cargue el archivo oficial en el panel de administración.";
@@ -683,7 +748,6 @@
         });
         // ── Fin Autocomplete ────────────────────────────────────────
 
-        // Cargar archivo de Políticas Comerciales (.xlsx)
         document.getElementById('politicas-file-input').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -798,17 +862,33 @@
         }
         actualizarMensajeEstadoPoliticas();
 
-        if (localStorage.getItem('mapa_top10_ventas')) {
-            mapaTop10Ventas = JSON.parse(localStorage.getItem('mapa_top10_ventas'));
-            actualizarMensajeEstadoVentas();
-        }
-
         function actualizarMensajeEstadoVentas() {
             const numProds = Object.keys(mapaTop10Ventas).length;
             const msgEl = document.getElementById('ventas-status-msg');
             if (msgEl) {
                 msgEl.innerText = numProds > 0 ? `✓ Base de datos analítica activa: ${numProds} productos mapeados.` : "Sin datos de venta masiva cargados.";
             }
+        }
+
+        // Cargar caché de ventas al arrancar la aplicación
+        document.addEventListener("DOMContentLoaded", async () => {
+            const ventasCache = await obtenerDeCacheVentas();
+            if (ventasCache) {
+                mapaTop10Ventas = ventasCache;
+                actualizarMensajeEstadoVentas();
+                actualizarTablaReporte();
+            }
+        });
+
+        // Fuente única de verdad: qué registros puede ver el usuario actual
+        // antes de aplicar los filtros de la UI (sucursal/mes/etc).
+        // SuperAdmin: todo. Admin y User: solo los de su FA asignada.
+        function obtenerVencidosVisibles() {
+            if (!usuarioActual || esSuperUsuario(usuarioActual)) {
+                return [...globalVencidos];
+            }
+            const faAsignada = (usuarioActual.sucursal || '').toUpperCase();
+            return globalVencidos.filter(item => item.sucursal && String(item.sucursal).toUpperCase() === faAsignada);
         }
 
         function filtrarLista(lista) {
@@ -828,7 +908,7 @@
         }
 
         function exportarFormatoCargaMasiva() {
-            let listaFiltrada = [...globalVencidos];
+            let listaFiltrada = obtenerVencidosVisibles();
             listaFiltrada = filtrarLista(listaFiltrada);
 
             const datosMasivos = listaFiltrada.map(item => ({
@@ -863,7 +943,6 @@
             XLSX.writeFile(libroTrabajo, "Formato_Carga_Masiva_Productos.xlsx");
         }
 
-        // CONTROL DE CARGA MASIVA INTEGRADO CON EL MAESTRO DE PROVEEDORES COMPLETO
         document.getElementById('productos-masivo-file-input').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -971,7 +1050,6 @@
                     alert(`¡Carga masiva finalizada con éxito!\nSe añadieron ${nuevosRegistrosCargados} registros analizados según su proveedor/viñeta.`);
                     document.getElementById('productos-masivo-file-input').value = "";
 
-                    // ENVIAR LOTE A GOOGLE SHEETS
                     if (nuevosRegistrosArray.length > 0) {
                         enviarASheets(nuevosRegistrosArray);
                     }
@@ -988,7 +1066,6 @@
 
             const estadoActual = globalVencidos[index].estadoGestion || "Pendiente";
 
-            // Una vez definido (distinto de "Pendiente"), no se puede volver a cambiar.
             if (estadoActual !== "Pendiente") {
                 alert("⚠️ El Estado de Gestión ya fue definido (" + estadoActual + ") y no puede modificarse.");
                 actualizarTablaReporte();
@@ -1001,10 +1078,6 @@
             await enviarActualizacionEstadoGestion(id, nuevoEstado);
         }
 
-        // Envía el nuevo Estado de Gestión al Apps Script para que quede
-        // guardado también en la hoja de Sheets (el backend además valida
-        // que no se haya definido ya, como resguardo por si esto se llama
-        // fuera de la interfaz).
         async function enviarActualizacionEstadoGestion(id, nuevoEstado) {
             if (!WEB_APP_URL || WEB_APP_URL.includes("TU_URL")) return;
 
@@ -1020,23 +1093,29 @@
             }
         }
 
-        // Carga Masiva de Reporte Ventas (.xlsx)
+        // Carga Masiva de Reporte Ventas (.xlsx) optimizada con IndexedDB
         document.getElementById('ventas-file-input').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
 
+            Swal.fire({
+                title: 'Procesando archivo masivo...',
+                text: 'Por favor espere mientras se cargan y estructuran los +240k registros de ventas.',
+                allowOutsideClick: false,
+                didOpen: () => { Swal.showLoading(); }
+            });
+
             const reader = new FileReader();
-            reader.onload = function(evt) {
+            reader.onload = async function(evt) {
                 try {
                     const data = new Uint8Array(evt.target.result);
                     const workbook = XLSX.read(data, { type: 'array' });
                     const registros = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
                     
-                    if(registros.length === 0) { alert("El archivo está vacío."); return; }
+                    if(registros.length === 0) { throw new Error("El archivo está vacío."); }
 
                     if (!('Sucursal' in registros[0]) || !('Producto' in registros[0]) || !('Cantidad' in registros[0])) {
-                        alert("Estructura inválida. Las columnas deben ser exactamente: 'Sucursal', 'Producto' y 'Cantidad'.");
-                        return;
+                        throw new Error("Estructura inválida. Las columnas deben ser exactamente: 'Sucursal', 'Producto' y 'Cantidad'.");
                     }
 
                     let mapaTemporal = {};
@@ -1066,19 +1145,23 @@
                         mapaFinal[prod] = sucursalesArreglo;
                     }
 
+                    // Guardado seguro en IndexedDB
+                    await guardarEnCacheVentas(mapaFinal);
                     mapaTop10Ventas = mapaFinal;
-                    localStorage.setItem('mapa_top10_ventas', JSON.stringify(mapaTop10Ventas));
+
+                    Swal.close();
                     actualizarMensajeEstadoVentas();
                     actualizarTablaReporte();
-                    alert("¡Éxito! El archivo masivo de ventas fue procesado y estructurado correctamente.");
+                    Swal.fire('¡Éxito!', 'El archivo masivo de ventas (+240k registros) fue procesado y guardado en la caché local sin errores.', 'success');
                 } catch (error) {
-                    alert("Error al procesar el archivo de ventas.");
+                    Swal.close();
+                    console.error(error);
+                    Swal.fire('Error', error.message, 'error');
                 }
             };
             reader.readAsArrayBuffer(file);
         });
 
-        // Cargar Catálogo Oficial (.xlsx)
         document.getElementById('excel-file-input').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -1126,22 +1209,21 @@
             reader.readAsArrayBuffer(file);
         });
 
-        // Restauración desde Copias de Seguridad (.json)
         document.getElementById('backup-file-input').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
 
             const reader = new FileReader();
-            reader.onload = function(evt) {
+            reader.onload = async function(evt) {
                 try {
                     const datosRestaurados = JSON.parse(evt.target.result);
                     if (datosRestaurados.vencidos && datosRestaurados.usuarios && datosRestaurados.catalogo) {
                         if (confirm("¿Estás seguro de restaurar este backup?")) {
                             localStorage.setItem('vencidos', JSON.stringify(datosRestaurados.vencidos));
-                            usuariosCache = datosRestaurados.usuarios; // Nota: esto no sobrescribe la hoja "Usuarios" del Sheet, solo la vista local
+                            usuariosCache = datosRestaurados.usuarios;
                             localStorage.setItem('catalogo_excel_vencidos', JSON.stringify(datosRestaurados.catalogo));
                             if (datosRestaurados.mapaTop10Ventas) {
-                                localStorage.setItem('mapa_top10_ventas', JSON.stringify(datosRestaurados.mapaTop10Ventas));
+                                await guardarEnCacheVentas(datosRestaurados.mapaTop10Ventas);
                                 mapaTop10Ventas = datosRestaurados.mapaTop10Ventas;
                             }
                             if (datosRestaurados.mapaProductosLaboratorios) {
@@ -1183,7 +1265,6 @@
         }
         actualizarDatalistEnPantalla();
 
-        // Caché en memoria de los usuarios (la fuente de verdad vive en la hoja "Usuarios" del Sheet)
         let usuariosCache = [];
 
         globalVencidos = JSON.parse(localStorage.getItem('vencidos')) || [];
@@ -1228,12 +1309,29 @@
                     document.getElementById('admin-filters-container').style.display = 'none';
                     document.getElementById('tip-modal-msg').style.display = 'none';
                 }
-                // La columna "Acciones" (eliminar registro) solo la ve el Super Usuario.
                 document.getElementById('th-acciones-reporte').style.display = esSuperUsuario(cuenta) ? 'table-cell' : 'none';
+
+                // Admin y User quedan atados a su FA asignada: el campo se
+                // precarga y se bloquea para que no puedan registrar en otra.
+                const inputSucursal = document.getElementById('prod-sucursal');
+                if (!esSuperUsuario(cuenta)) {
+                    inputSucursal.value = cuenta.sucursal || '';
+                    inputSucursal.readOnly = true;
+                    inputSucursal.style.backgroundColor = '#eef2f7';
+                    inputSucursal.title = 'Solo puedes registrar en tu FA asignada: ' + (cuenta.sucursal || '(sin asignar)');
+                } else {
+                    inputSucursal.readOnly = false;
+                    inputSucursal.style.backgroundColor = '';
+                    inputSucursal.title = '';
+                }
+
+                if (!esSuperUsuario(cuenta) && !cuenta.sucursal) {
+                    alert('⚠️ Tu cuenta no tiene una FA asignada todavía. Contacta a un Super Usuario para que te asigne una antes de registrar productos.');
+                }
+
                 actualizarSelectProveedores();
                 actualizarTablaReporte();
 
-                // Sincroniza con lo que ya existe en Google Sheets
                 cargarDesdeSheets();
             } else {
                 errorDiv.style.color = '#dc3545';
@@ -1247,24 +1345,38 @@
             document.getElementById('login-container').style.display = 'block';
             document.getElementById('login-user').value = '';
             document.getElementById('login-pass').value = '';
+            const inputSucursal = document.getElementById('prod-sucursal');
+            inputSucursal.readOnly = false;
+            inputSucursal.style.backgroundColor = '';
+            inputSucursal.value = '';
         }
 
         function guardarProducto(e) {
             e.preventDefault();
             try {
-                const sucursal = document.getElementById('prod-sucursal').value.trim().toUpperCase();
+                let sucursal = document.getElementById('prod-sucursal').value.trim().toUpperCase();
                 const producto = document.getElementById('prod-name').value.trim();
                 const laboratorio = document.getElementById('prod-lab').value.trim() || "Sin Politica";
                 const proveedor = document.getElementById('prod-prov').value; 
                 const cantidad = document.getElementById('prod-qty').value;
                 const fecha = document.getElementById('prod-date').value;
 
-                if (!sucursal || !producto || !cantidad || !fecha) {
-                    alert("Por favor completa todos los campos obligatorios (sucursal, producto, cantidad y fecha).");
-                    return;
-                }
                 if (!usuarioActual) {
                     alert("No hay una sesión activa. Por favor inicia sesión de nuevo.");
+                    return;
+                }
+
+                // Admin y User solo pueden registrar en su FA asignada.
+                if (!esSuperUsuario(usuarioActual)) {
+                    if (!usuarioActual.sucursal) {
+                        alert("⚠️ Tu cuenta no tiene una FA asignada. Contacta a un Super Usuario.");
+                        return;
+                    }
+                    sucursal = usuarioActual.sucursal.toUpperCase();
+                }
+
+                if (!sucursal || !producto || !cantidad || !fecha) {
+                    alert("Por favor completa todos los campos obligatorios (sucursal, producto, cantidad y fecha).");
                     return;
                 }
 
@@ -1293,7 +1405,6 @@
                 document.getElementById('vencidos-form').reset();
                 document.getElementById('form-diagnostico-container').style.display = 'none';
 
-                // ENVIAR A GOOGLE SHEETS
                 enviarASheets(nuevoRegistro);
             } catch (error) {
                 console.error("Error al guardar el producto:", error);
@@ -1318,7 +1429,7 @@
             
             let sucursalesUnicas = new Set(), mesesVencUnicos = new Set(), mesesRegUnicos = new Set();
             
-            globalVencidos.forEach(item => {
+            obtenerVencidosVisibles().forEach(item => {
                 if (item.sucursal) sucursalesUnicas.add(String(item.sucursal).toUpperCase());
                 if (item.mes) mesesVencUnicos.add(item.mes);
                 if (item.mesRegistro) mesesRegUnicos.add(item.mesRegistro);
@@ -1340,13 +1451,9 @@
         }
 
         function actualizarTablaReporte() {
-            let listaVisualizacion = [...globalVencidos];
-            if (usuarioActual) {
-                if (esAdminOSuperior(usuarioActual)) {
-                    listaVisualizacion = filtrarLista(listaVisualizacion);
-                } else {
-                    listaVisualizacion = listaVisualizacion.filter(item => item.usuario && String(item.usuario).toLowerCase() === usuarioActual.usuario.toLowerCase());
-                }
+            let listaVisualizacion = obtenerVencidosVisibles();
+            if (usuarioActual && esAdminOSuperior(usuarioActual)) {
+                listaVisualizacion = filtrarLista(listaVisualizacion);
             }
 
             poblarSelectoresFiltros();
@@ -1385,7 +1492,6 @@
 
                 let selectorGestionHTML;
                 if (actualGestion === 'Pendiente') {
-                    // Todavía no se ha definido: se puede elegir un estado (una sola vez).
                     selectorGestionHTML = `
                         <select class="select-interactivo" style="background-color: ${colorFondoSelect};" onchange="actualizarEstadoGestionInteractiva(${item.id}, this.value); actualizarTablaReporte();">
                             <option value="Pendiente" selected>⏳ Pendiente</option>
@@ -1395,7 +1501,6 @@
                         </select>
                     `;
                 } else {
-                    // Ya se definió: queda bloqueado, no se puede modificar ni regresar a un estado anterior.
                     selectorGestionHTML = `
                         <span class="badge" style="background-color: ${colorFondoSelect}; cursor: not-allowed;" title="El Estado de Gestión ya fue definido y no puede modificarse">
                             ${iconosGestion[actualGestion] || ''} ${actualGestion} 🔒
@@ -1459,14 +1564,13 @@
                 localStorage.setItem('vencidos', JSON.stringify(globalVencidos));
                 actualizarTablaReporte();
 
-                // ELIMINAR TAMBIÉN EN GOOGLE SHEETS
                 enviarEliminacionASheets(id);
             }
         }
 
         function exportarAReporteExcelAvanzado() {
             if (usuarioActual && !esAdminOSuperior(usuarioActual)) return;
-            let listaVencidos = [...globalVencidos];
+            let listaVencidos = obtenerVencidosVisibles();
             listaVencidos = filtrarLista(listaVencidos);
 
             if (listaVencidos.length === 0) { alert("No hay registros para exportar."); return; }
@@ -1505,7 +1609,12 @@
         }
 
         function generarBackupSistema() {
-            if (usuarioActual && !esAdminOSuperior(usuarioActual)) return;
+            // Contiene los vencidos de TODAS las FA, así que queda reservado
+            // al Super Usuario (Admin/User solo deben ver/exportar su propia FA).
+            if (!esSuperUsuario(usuarioActual)) {
+                alert("⚠️ Solo un Super Usuario puede generar el backup completo del sistema.");
+                return;
+            }
             const estructura = { vencidos: globalVencidos, usuarios: usuariosCache, catalogo: listadoProductos, mapaTop10Ventas, mapaProductosLaboratorios, maestroPoliticas };
             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(estructura, null, 2));
             const a = document.createElement('a'); a.setAttribute("href", dataStr); a.setAttribute("download", `Backup_Sistema_Vencidos.json`); a.click();
@@ -1516,12 +1625,15 @@
             const nuevoUser = document.getElementById('new-username').value.trim();
             const nuevaPass = document.getElementById('new-password').value;
             const nuevoRol = document.getElementById('new-role').value;
+            const nuevaFA = document.getElementById('new-fa').value.trim().toUpperCase();
 
             if (!nuevoUser || !nuevaPass) return alert('Usuario y contraseña son obligatorios.');
             if (usuariosCache.some(u => u.usuario.toLowerCase() === nuevoUser.toLowerCase())) { return alert('El nombre de usuario ya existe.'); }
+            if (nuevoRol !== 'SuperAdmin' && !nuevaFA) { return alert('Debe asignar una FA al usuario (obligatoria para Admin y Usuario Normal).'); }
 
             document.getElementById('user-form').reset();
-            await enviarAccionUsuarioASheets({ action: "crearUsuario", usuario: nuevoUser, contrasena: nuevaPass, rol: nuevoRol });
+            actualizarVisibilidadFANuevoUsuario();
+            await enviarAccionUsuarioASheets({ action: "crearUsuario", usuario: nuevoUser, contrasena: nuevaPass, rol: nuevoRol, sucursal: nuevaFA });
         }
 
         function actualizarTablaUsuarios() {
@@ -1532,12 +1644,12 @@
                 const tr = document.createElement('tr');
                 let claseBotonRol = u.rol === 'SuperAdmin' ? 'btn-role-super' : (u.rol === 'Admin' ? 'btn-role-admin' : 'btn-role-user');
                 let etiquetaRol = u.rol === 'SuperAdmin' ? 'Super Usuario' : (u.rol === 'Admin' ? 'Admin' : 'User');
-                tr.innerHTML = `<td><strong>${u.usuario}</strong></td><td style="text-align: center;"><button class="btn-role-toggle ${claseBotonRol}" onclick="toggleAdminRole(${index})">${etiquetaRol}</button></td><td style="text-align: right;"><button class="btn-action btn-password" onclick="cambiarClaveUsuario(${index})">🔑 Clave</button> <button class="btn-delete-item" onclick="eliminarUsuario(${index})">🗑️</button></td>`;
+                let faDisplay = u.sucursal ? `<span class="badge badge-sucursal">${u.sucursal}</span>` : (u.rol === 'SuperAdmin' ? '<span style="color:#6c757d; font-size:0.85em;">Todas</span>' : '<span style="color:#dc3545; font-size:0.85em;">Sin asignar</span>');
+                tr.innerHTML = `<td><strong>${u.usuario}</strong></td><td style="text-align: center;"><button class="btn-role-toggle ${claseBotonRol}" onclick="toggleAdminRole(${index})">${etiquetaRol}</button></td><td style="text-align: center; cursor:pointer;" onclick="cambiarFAUsuario(${index})" title="Clic para cambiar la FA asignada">${faDisplay}</td><td style="text-align: right;"><button class="btn-action btn-password" onclick="cambiarClaveUsuario(${index})">🔑 Clave</button> <button class="btn-delete-item" onclick="eliminarUsuario(${index})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
 
-        // Cicla el rol de un usuario: User -> Admin -> Super Usuario -> User ...
         async function toggleAdminRole(index) {
             const usuario = usuariosCache[index];
             if (usuarioActual && usuarioActual.usuario.toLowerCase() === usuario.usuario.toLowerCase()) {
@@ -1561,6 +1673,19 @@
             }
         }
 
+        async function cambiarFAUsuario(index) {
+            const usuario = usuariosCache[index];
+            const nueva = prompt(`Ingrese la FA a asignar a "${usuario.usuario}" (ej: FA01). Déjelo vacío para "Sin asignar":`, usuario.sucursal || '');
+            if (nueva === null) return; // Canceló
+            const nuevaFA = nueva.trim().toUpperCase();
+            if (usuario.rol !== 'SuperAdmin' && !nuevaFA) {
+                alert('⚠️ Los usuarios Admin y User necesitan una FA asignada.');
+                return;
+            }
+            await enviarAccionUsuarioASheets({ action: "actualizarSucursalUsuario", usuario: usuario.usuario, sucursal: nuevaFA });
+            actualizarTablaReporte();
+        }
+
         async function eliminarUsuario(index) {
             const usuario = usuariosCache[index];
             if (usuarioActual && usuarioActual.usuario.toLowerCase() === usuario.usuario.toLowerCase()) {
@@ -1571,7 +1696,6 @@
             }
         }
 
-        // Trae la lista de usuarios desde la hoja "Usuarios" del Sheet
         async function cargarUsuariosDesdeSheets() {
             if (!WEB_APP_URL || WEB_APP_URL.includes("TU_URL")) return usuariosCache;
 
@@ -1579,8 +1703,6 @@
                 const respuesta = await fetch(WEB_APP_URL + "?tipo=usuarios&t=" + Date.now());
                 const usuarios = await respuesta.json();
                 if (Array.isArray(usuarios)) {
-                    // Normalizamos espacios y mayúsculas para que no falle la comparación
-                    // de rol ("Admin"/"User"/"SuperAdmin") por diferencias al escribir en el Sheet.
                     usuariosCache = usuarios.map(u => {
                         const rolNormalizado = String(u.rol || '').trim().toLowerCase();
                         let rol = 'User';
@@ -1589,7 +1711,8 @@
                         return {
                             usuario: String(u.usuario || '').trim(),
                             contrasena: String(u.contrasena !== undefined && u.contrasena !== null ? u.contrasena : '').trim(),
-                            rol: rol
+                            rol: rol,
+                            sucursal: String(u.sucursal || '').trim().toUpperCase()
                         };
                     });
                 }
@@ -1599,8 +1722,6 @@
             return usuariosCache;
         }
 
-        // Envía una acción de usuario (crear / cambiar rol / cambiar clave / eliminar) al Apps Script
-        // y luego refresca la caché local con lo que quedó realmente guardado en la hoja.
         async function enviarAccionUsuarioASheets(payload) {
             if (!WEB_APP_URL || WEB_APP_URL.includes("TU_URL")) return;
 
@@ -1619,7 +1740,6 @@
             actualizarTablaUsuarios();
         }
 
-        // Función para eliminar un registro en Google Sheets por su ID
         function enviarEliminacionASheets(id) {
             if (!WEB_APP_URL || WEB_APP_URL.includes("TU_URL")) return;
 
@@ -1639,9 +1759,6 @@
             });
         }
 
-        // Trae los registros que existen en Google Sheets y los mezcla con lo local.
-        // El sheet manda para todo lo que ya está sincronizado (así, si algo se
-        // borró o editó desde ahí, o desde otro dispositivo, se refleja aquí).
         async function cargarDesdeSheets() {
             if (!WEB_APP_URL || WEB_APP_URL.includes("TU_URL")) return;
 
@@ -1664,8 +1781,6 @@
                 });
 
                 const idsEnSheet = new Set(registrosSheet.map(r => String(r.id)));
-
-                // Conserva registros locales que aún no llegaron al sheet (ej. si el POST falló por conexión)
                 const pendientesLocales = globalVencidos.filter(item => !idsEnSheet.has(String(item.id)));
 
                 globalVencidos = [...registrosSheet, ...pendientesLocales];
@@ -1676,7 +1791,6 @@
             }
         }
 
-        // Función para enviar datos al Google Apps Script
         function enviarASheets(payload) {
             if (!WEB_APP_URL || WEB_APP_URL.includes("TU_URL")) return;
 
