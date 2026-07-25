@@ -284,7 +284,7 @@
                 <small>Usuario actual: <span id="current-user-display" style="font-weight: bold;"></span> (<span id="current-role-display"></span>)</small>
             </div>
             <div>
-                <button class="btn-secondary" onclick="cargarDesdeSheets()" title="Trae los últimos cambios guardados en Google Sheets">🔄 Sincronizar</button>
+                <button class="btn-secondary" onclick="sincronizarManual()" title="Reemplaza la vista actual con lo que hay guardado en Google Sheets">🔄 Sincronizar</button>
                 <button class="btn-secondary" onclick="logout()">Cerrar Sesión</button>
             </div>
         </header>
@@ -1788,6 +1788,60 @@
                 actualizarTablaReporte();
             } catch (error) {
                 console.error("No se pudo sincronizar con Google Sheets:", error);
+            }
+        }
+
+        // Sincronización manual (botón "🔄 Sincronizar"): a diferencia de
+        // cargarDesdeSheets(), que fusiona con lo que haya pendiente localmente,
+        // esta función REEMPLAZA por completo la vista local con lo que hay
+        // realmente guardado en el Sheet, para que el usuario vea siempre el
+        // estado real y no registros "fantasma" que nunca llegaron a guardarse.
+        async function sincronizarManual() {
+            if (!WEB_APP_URL || WEB_APP_URL.includes("TU_URL")) {
+                alert("La URL del Web App de Google Sheets no está configurada.");
+                return;
+            }
+
+            Swal.fire({
+                title: 'Sincronizando...',
+                text: 'Actualizando la vista con los datos del Sheet.',
+                allowOutsideClick: false,
+                allowEscapeKey: false,
+                didOpen: () => { Swal.showLoading(); }
+            });
+
+            try {
+                const respuesta = await fetch(WEB_APP_URL + "?t=" + Date.now());
+                if (!respuesta.ok) {
+                    throw new Error("El servidor respondió con estado " + respuesta.status);
+                }
+
+                const registrosSheet = await respuesta.json();
+                if (!Array.isArray(registrosSheet)) {
+                    throw new Error("La respuesta del Sheet no tiene el formato esperado.");
+                }
+
+                registrosSheet.forEach(item => {
+                    item.cantidad = parseInt(item.cantidad) || 0;
+                    item.sucursal = String(item.sucursal || '');
+                    item.producto = String(item.producto || '');
+                    item.laboratorio = String(item.laboratorio || '');
+                    item.proveedor = String(item.proveedor || '');
+                    item.usuario = String(item.usuario || '');
+                    item.mes = String(item.mes || '');
+                    item.mesRegistro = String(item.mesRegistro || '');
+                    item.estadoRecuperacion = evaluarEstadoRecuperacion(item.proveedor, item.laboratorio);
+                });
+
+                // Reemplazo total: lo que esté en el Sheet es la única fuente de verdad.
+                globalVencidos = registrosSheet;
+                localStorage.setItem('vencidos', JSON.stringify(globalVencidos));
+                actualizarTablaReporte();
+
+                Swal.fire('Sincronizado', `Se cargaron ${registrosSheet.length} registro(s) desde Google Sheets.`, 'success');
+            } catch (error) {
+                console.error("Error al sincronizar manualmente con Sheets:", error);
+                Swal.fire('Error al sincronizar', 'No se pudo traer la información del Sheet: ' + error.message, 'error');
             }
         }
 
