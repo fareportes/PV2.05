@@ -346,7 +346,7 @@
 
             <div class="card" id="dashboard-riesgo-card">
                 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom: 5px;">
-                    <h2 style="margin:0; border:none; padding:0;">📊 Riesgo de Vencimiento con Venta en Otras FA</h2>
+                    <h2 style="margin:0; border:none; padding:0;">📊 Riesgo de Vencimiento con Venta en Otras FA <span id="dash-fa-activa-badge" style="display:none; font-size:0.6em; background-color:#eef2f7; color:var(--primary-color); padding:3px 8px; border-radius:10px; vertical-align:middle;"></span></h2>
                     <label style="font-size:0.85em; display:flex; align-items:center; gap:6px; cursor:pointer; font-weight: normal;">
                         <input type="checkbox" id="dash-toggle-filtro" onchange="toggleFiltroRiesgoOtraFA()">
                         Mostrar solo estos en la tabla
@@ -1008,7 +1008,40 @@
         }
 
         function calcularStatsRiesgoOtraFA() {
-            const base = obtenerVencidosVisibles().filter(tieneVentaEnOtraFA);
+            let base = obtenerVencidosVisibles();
+
+            // Si hay filtros activos en el reporte (Sucursal, Mes Venc., Mes Reg.,
+            // Política o Estado Gestión), el dashboard se recalcula solo con lo
+            // que esos filtros dejan visible.
+            const selectSucursal = document.getElementById('filter-sucursal');
+            const selectMesVenc = document.getElementById('filter-mes-venc');
+            const selectMesReg = document.getElementById('filter-mes-registro');
+            const selectRecuperacion = document.getElementById('filter-recuperacion');
+            const selectGestion = document.getElementById('filter-estado-gestion');
+
+            const filtroSucursalActivo = selectSucursal ? selectSucursal.value : '';
+            const filtroMesVencActivo = selectMesVenc ? selectMesVenc.value : '';
+            const filtroMesRegActivo = selectMesReg ? selectMesReg.value : '';
+            const filtroRecuperacionActivo = selectRecuperacion ? selectRecuperacion.value : '';
+            const filtroGestionActivo = selectGestion ? selectGestion.value : '';
+
+            if (filtroSucursalActivo !== '') {
+                base = base.filter(item => item.sucursal && String(item.sucursal).toUpperCase() === filtroSucursalActivo.toUpperCase());
+            }
+            if (filtroMesVencActivo !== '') {
+                base = base.filter(item => item.mes === filtroMesVencActivo);
+            }
+            if (filtroMesRegActivo !== '') {
+                base = base.filter(item => item.mesRegistro === filtroMesRegActivo);
+            }
+            if (filtroRecuperacionActivo !== '') {
+                base = base.filter(item => item.estadoRecuperacion === filtroRecuperacionActivo);
+            }
+            if (filtroGestionActivo !== '') {
+                base = base.filter(item => (item.estadoGestion || 'Pendiente') === filtroGestionActivo);
+            }
+
+            base = base.filter(tieneVentaEnOtraFA);
             let pendientes = 0, trabajados = 0, enviados = 0, impulsados = 0;
             base.forEach(item => {
                 const g = item.estadoGestion || 'Pendiente';
@@ -1051,6 +1084,29 @@
 
             const badge = document.getElementById('dash-filtro-activo-badge');
             if (badge) badge.style.display = filtroSoloRiesgoOtraFA ? 'inline-block' : 'none';
+
+            const badgeFA = document.getElementById('dash-fa-activa-badge');
+            if (badgeFA) {
+                const partes = [];
+                const selectSucursal = document.getElementById('filter-sucursal');
+                const selectMesVenc = document.getElementById('filter-mes-venc');
+                const selectMesReg = document.getElementById('filter-mes-registro');
+                const selectRecuperacion = document.getElementById('filter-recuperacion');
+                const selectGestion = document.getElementById('filter-estado-gestion');
+
+                if (selectSucursal && selectSucursal.value !== '') partes.push('📍 ' + selectSucursal.value);
+                if (selectMesVenc && selectMesVenc.value !== '') partes.push('Venc: ' + selectMesVenc.value);
+                if (selectMesReg && selectMesReg.value !== '') partes.push('Reg: ' + selectMesReg.value);
+                if (selectRecuperacion && selectRecuperacion.value !== '') partes.push(selectRecuperacion.value);
+                if (selectGestion && selectGestion.value !== '') partes.push(selectGestion.value);
+
+                if (partes.length > 0) {
+                    badgeFA.innerText = partes.join(' · ');
+                    badgeFA.style.display = 'inline-block';
+                } else {
+                    badgeFA.style.display = 'none';
+                }
+            }
         }
 
         function toggleFiltroRiesgoOtraFA() {
