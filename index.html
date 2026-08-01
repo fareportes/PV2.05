@@ -196,6 +196,59 @@
             background-color: #f0f4f8;
         }
 
+        /* ---- Dashboard: Riesgo de Vencimiento con Venta en Otras FA ---- */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+        }
+        @media (max-width: 700px) {
+            .stats-grid { grid-template-columns: 1fr; }
+        }
+        .stat-box {
+            background-color: #f8f9fa;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .stat-box:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+        }
+        .stat-box.active {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(0,86,179,0.25);
+        }
+        .stat-num {
+            display: block;
+            font-size: 1.9em;
+            font-weight: bold;
+            line-height: 1.2;
+        }
+        .stat-label {
+            font-size: 0.85em;
+            color: #666;
+        }
+        .stat-total .stat-num { color: var(--primary-color); }
+        .stat-pendiente .stat-num { color: #e65100; }
+        .stat-trabajado .stat-num { color: var(--secondary-color); }
+
+        .dash-progreso-track {
+            background-color: #eef2f7;
+            border-radius: 10px;
+            height: 10px;
+            overflow: hidden;
+        }
+        .dash-progreso-fill {
+            background-color: var(--secondary-color);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s;
+        }
+
         .modal {
             display: none; 
             position: fixed; 
@@ -290,6 +343,44 @@
         </header>
 
         <div class="container">
+
+            <div class="card" id="dashboard-riesgo-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom: 5px;">
+                    <h2 style="margin:0; border:none; padding:0;">📊 Riesgo de Vencimiento con Venta en Otras FA</h2>
+                    <label style="font-size:0.85em; display:flex; align-items:center; gap:6px; cursor:pointer; font-weight: normal;">
+                        <input type="checkbox" id="dash-toggle-filtro" onchange="toggleFiltroRiesgoOtraFA()">
+                        Mostrar solo estos en la tabla
+                    </label>
+                </div>
+                <p style="color:#666; font-size:0.85em; margin: 0 0 15px 0;">
+                    Productos próximos a vencer que <strong>no tienen venta en su propia FA</strong> pero <strong>sí se venden en otras farmacias</strong>: son candidatos a traslado/redistribución antes de perderse.
+                </p>
+                <div class="stats-grid">
+                    <div class="stat-box stat-total" onclick="filtrarDashboardRiesgo('total')" title="Ver todos los que están en riesgo con venta en otra FA">
+                        <span class="stat-num" id="dash-total-riesgo">0</span>
+                        <span class="stat-label">Total en Riesgo</span>
+                    </div>
+                    <div class="stat-box stat-pendiente" onclick="filtrarDashboardRiesgo('pendiente')" title="Ver solo los pendientes de gestionar">
+                        <span class="stat-num" id="dash-pendientes">0</span>
+                        <span class="stat-label">⏳ Pendientes</span>
+                    </div>
+                    <div class="stat-box stat-trabajado" onclick="filtrarDashboardRiesgo('trabajado')" title="Ver los que ya fueron trabajados, enviados o impulsados">
+                        <span class="stat-num" id="dash-trabajados">0</span>
+                        <span class="stat-label">✅ Trabajados</span>
+                    </div>
+                </div>
+                <div style="margin-top:15px;">
+                    <div style="display:flex; justify-content:space-between; font-size:0.8em; color:#666; margin-bottom:4px;">
+                        <span>Avance de gestión</span>
+                        <span id="dash-progreso-pct">0%</span>
+                    </div>
+                    <div class="dash-progreso-track">
+                        <div id="dash-progreso-bar" class="dash-progreso-fill"></div>
+                    </div>
+                    <small id="dash-breakdown" style="color:#666; display:block; margin-top:6px;"></small>
+                </div>
+            </div>
+
             <div class="grid">
                 
                 <div>
@@ -433,10 +524,18 @@
                         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--light-color); padding-bottom: 10px; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                             <div>
                                 <h2 id="reporte-titulo" style="margin: 0; border: none; padding: 0;">Reporte de Vencidos</h2>
+                                <span id="dash-filtro-activo-badge" style="display:none; font-size:0.8em; color: var(--primary-color); cursor:pointer;" onclick="quitarFiltroDashboardRiesgo()">
+                                    🔎 Filtro de riesgo activo — <span style="text-decoration:underline;">quitar</span>
+                                </span>
                             </div>
                             <div>
                                 <span class="badge badge-date">📅 Fecha de Hoy: <strong id="fecha-actual-header"></strong></span>
                             </div>
+                        </div>
+
+                        <div class="form-group" style="margin-bottom: 15px;">
+                            <label for="buscador-producto" style="font-size: 0.9em;">🔍 Buscar producto:</label>
+                            <input type="text" id="buscador-producto" oninput="actualizarTablaReporte()" placeholder="Escriba el nombre del producto para filtrar los registros..." style="width:100%; box-sizing:border-box;">
                         </div>
 
                         <div id="admin-filters-container" style="display: none;">
@@ -522,6 +621,10 @@
         let maestroPoliticas = {}; 
         let usuarioActual = null;
         let globalVencidos = [];
+
+        // Estado del filtro del Dashboard de Riesgo (venta en otras FA)
+        let filtroSoloRiesgoOtraFA = false;
+        let filtroGestionAgrupadoRiesgo = ''; // '' | 'pendiente' | 'trabajado'
 
         // ── MÓDULO DE INDEXEDDB PARA CACHÉ MASIVA DE VENTAS (+240k registros) ──
         const DB_NAME = "ControlVencidosDB";
@@ -889,6 +992,85 @@
             }
             const faAsignada = (usuarioActual.sucursal || '').toUpperCase();
             return globalVencidos.filter(item => item.sucursal && String(item.sucursal).toUpperCase() === faAsignada);
+        }
+
+        // Un producto está "en riesgo con venta en otra FA" cuando, según el
+        // reporte masivo de ventas cargado, alguna sucursal DISTINTA a la de
+        // origen del vencido sí registra venta de ese producto: es candidato
+        // a traslado/redistribución en lugar de perderse.
+        function tieneVentaEnOtraFA(item) {
+            const registros = mapaTop10Ventas[item.producto];
+            if (!registros || !registros.length) return false;
+            return registros.some(r =>
+                String(r.sucursal).toUpperCase() !== String(item.sucursal || '').toUpperCase() &&
+                Number(r.quantity) > 0
+            );
+        }
+
+        function calcularStatsRiesgoOtraFA() {
+            const base = obtenerVencidosVisibles().filter(tieneVentaEnOtraFA);
+            let pendientes = 0, trabajados = 0, enviados = 0, impulsados = 0;
+            base.forEach(item => {
+                const g = item.estadoGestion || 'Pendiente';
+                if (g === 'Trabajado') trabajados++;
+                else if (g === 'Enviado') enviados++;
+                else if (g === 'Impulsado') impulsados++;
+                else pendientes++;
+            });
+            return {
+                total: base.length,
+                pendientes,
+                totalTrabajado: trabajados + enviados + impulsados,
+                trabajados, enviados, impulsados
+            };
+        }
+
+        function actualizarDashboardRiesgo() {
+            const elTotal = document.getElementById('dash-total-riesgo');
+            if (!elTotal) return; // el dashboard aún no está en pantalla (antes del login)
+
+            const stats = calcularStatsRiesgoOtraFA();
+            elTotal.innerText = stats.total.toLocaleString('es-HN');
+            document.getElementById('dash-pendientes').innerText = stats.pendientes.toLocaleString('es-HN');
+            document.getElementById('dash-trabajados').innerText = stats.totalTrabajado.toLocaleString('es-HN');
+
+            const pct = stats.total > 0 ? Math.round((stats.totalTrabajado / stats.total) * 100) : 0;
+            document.getElementById('dash-progreso-bar').style.width = pct + '%';
+            document.getElementById('dash-progreso-pct').innerText = pct + '%';
+            document.getElementById('dash-breakdown').innerText =
+                `✅ ${stats.trabajados} Trabajado · ✈️ ${stats.enviados} Enviado · 🚀 ${stats.impulsados} Impulsado`;
+
+            document.querySelectorAll('#dashboard-riesgo-card .stat-box').forEach(box => box.classList.remove('active'));
+            if (filtroSoloRiesgoOtraFA) {
+                const selector = filtroGestionAgrupadoRiesgo === 'pendiente' ? '.stat-pendiente'
+                                : filtroGestionAgrupadoRiesgo === 'trabajado' ? '.stat-trabajado'
+                                : '.stat-total';
+                const cajaActiva = document.querySelector('#dashboard-riesgo-card ' + selector);
+                if (cajaActiva) cajaActiva.classList.add('active');
+            }
+
+            const badge = document.getElementById('dash-filtro-activo-badge');
+            if (badge) badge.style.display = filtroSoloRiesgoOtraFA ? 'inline-block' : 'none';
+        }
+
+        function toggleFiltroRiesgoOtraFA() {
+            filtroSoloRiesgoOtraFA = document.getElementById('dash-toggle-filtro').checked;
+            if (!filtroSoloRiesgoOtraFA) filtroGestionAgrupadoRiesgo = '';
+            actualizarTablaReporte();
+        }
+
+        function filtrarDashboardRiesgo(tipo) {
+            filtroSoloRiesgoOtraFA = true;
+            document.getElementById('dash-toggle-filtro').checked = true;
+            filtroGestionAgrupadoRiesgo = (tipo === 'pendiente' || tipo === 'trabajado') ? tipo : '';
+            actualizarTablaReporte();
+        }
+
+        function quitarFiltroDashboardRiesgo() {
+            filtroSoloRiesgoOtraFA = false;
+            filtroGestionAgrupadoRiesgo = '';
+            document.getElementById('dash-toggle-filtro').checked = false;
+            actualizarTablaReporte();
         }
 
         function filtrarLista(lista) {
@@ -1456,6 +1638,26 @@
                 listaVisualizacion = filtrarLista(listaVisualizacion);
             }
 
+            // Filtro del Dashboard de Riesgo (venta en otras FA), aplica a cualquier rol
+            if (filtroSoloRiesgoOtraFA) {
+                listaVisualizacion = listaVisualizacion.filter(tieneVentaEnOtraFA);
+            }
+            if (filtroGestionAgrupadoRiesgo === 'pendiente') {
+                listaVisualizacion = listaVisualizacion.filter(item => (item.estadoGestion || 'Pendiente') === 'Pendiente');
+            } else if (filtroGestionAgrupadoRiesgo === 'trabajado') {
+                listaVisualizacion = listaVisualizacion.filter(item => (item.estadoGestion || 'Pendiente') !== 'Pendiente');
+            }
+
+            // Buscador de producto (aplica a cualquier rol)
+            const inputBusqueda = document.getElementById('buscador-producto');
+            const textoBusqueda = inputBusqueda ? inputBusqueda.value.trim().toLowerCase() : '';
+            if (textoBusqueda !== '') {
+                listaVisualizacion = listaVisualizacion.filter(item =>
+                    String(item.producto || '').toLowerCase().includes(textoBusqueda)
+                );
+            }
+
+            actualizarDashboardRiesgo();
             poblarSelectoresFiltros();
             const tbody = document.querySelector('#reporte-table tbody');
             tbody.innerHTML = '';
