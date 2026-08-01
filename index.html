@@ -381,6 +381,27 @@
                 </div>
             </div>
 
+            <div class="card" id="dashboard-resumen-fa-card" style="display:none;">
+                <h2 style="margin:0 0 5px 0;">🏢 Resumen por FA (todas las sucursales)</h2>
+                <p style="color:#666; font-size:0.85em; margin: 0 0 15px 0;">
+                    Desglose de productos en riesgo con venta en otras FA, por sucursal de origen. Respeta los filtros de Mes Venc., Mes Reg., Política y Estado Gestión (no el de Sucursal, para poder comparar todas). Clic en una fila para filtrar esa FA en el reporte.
+                </p>
+                <div style="overflow-x:auto;">
+                    <table id="tabla-resumen-fa" style="width:100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--border-color); text-align:left;">
+                                <th style="padding:8px;">FA</th>
+                                <th style="padding:8px; text-align:right;">Total en Riesgo</th>
+                                <th style="padding:8px; text-align:right;">⏳ Pendientes</th>
+                                <th style="padding:8px; text-align:right;">✅ Trabajados</th>
+                                <th style="padding:8px;">Avance</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabla-resumen-fa-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <div class="grid">
                 
                 <div>
@@ -1107,6 +1128,88 @@
                     badgeFA.style.display = 'none';
                 }
             }
+
+            actualizarResumenPorFA();
+        }
+
+        // Tabla adicional exclusiva del SuperAdmin: desglose FA por FA de lo
+        // mismo que muestra el dashboard de riesgo, para poder comparar
+        // sucursales entre sí. Respeta los filtros de Mes Venc./Mes Reg./
+        // Política/Estado Gestión, pero ignora el de Sucursal (si no, no
+        // tendría sentido ver "todas las FA" a la vez).
+        function calcularResumenPorFA() {
+            let base = obtenerVencidosVisibles();
+
+            const selectMesVenc = document.getElementById('filter-mes-venc');
+            const selectMesReg = document.getElementById('filter-mes-registro');
+            const selectRecuperacion = document.getElementById('filter-recuperacion');
+            const selectGestion = document.getElementById('filter-estado-gestion');
+
+            if (selectMesVenc && selectMesVenc.value !== '') base = base.filter(item => item.mes === selectMesVenc.value);
+            if (selectMesReg && selectMesReg.value !== '') base = base.filter(item => item.mesRegistro === selectMesReg.value);
+            if (selectRecuperacion && selectRecuperacion.value !== '') base = base.filter(item => item.estadoRecuperacion === selectRecuperacion.value);
+            if (selectGestion && selectGestion.value !== '') base = base.filter(item => (item.estadoGestion || 'Pendiente') === selectGestion.value);
+
+            base = base.filter(tieneVentaEnOtraFA);
+
+            const porFA = {};
+            base.forEach(item => {
+                const fa = String(item.sucursal || 'Sin FA').toUpperCase();
+                if (!porFA[fa]) porFA[fa] = { fa, total: 0, pendientes: 0, trabajado: 0, enviado: 0, impulsado: 0 };
+                porFA[fa].total++;
+                const g = item.estadoGestion || 'Pendiente';
+                if (g === 'Trabajado') porFA[fa].trabajado++;
+                else if (g === 'Enviado') porFA[fa].enviado++;
+                else if (g === 'Impulsado') porFA[fa].impulsado++;
+                else porFA[fa].pendientes++;
+            });
+
+            return Object.values(porFA).sort((a, b) => a.fa.localeCompare(b.fa));
+        }
+
+        function actualizarResumenPorFA() {
+            const card = document.getElementById('dashboard-resumen-fa-card');
+            if (!card) return;
+
+            if (!usuarioActual || !esSuperUsuario(usuarioActual)) {
+                card.style.display = 'none';
+                return;
+            }
+            card.style.display = 'block';
+
+            const filas = calcularResumenPorFA();
+            const tbody = document.getElementById('tabla-resumen-fa-body');
+            if (!tbody) return;
+
+            if (filas.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="padding:12px; text-align:center; color:#888;">Sin registros en riesgo con venta en otras FA para los filtros actuales.</td></tr>';
+                return;
+            }
+
+            const selectSucursal = document.getElementById('filter-sucursal');
+            tbody.innerHTML = filas.map(f => {
+                const trabajados = f.trabajado + f.enviado + f.impulsado;
+                const pct = f.total > 0 ? Math.round((trabajados / f.total) * 100) : 0;
+                return `
+                    <tr style="border-bottom:1px solid var(--border-color); cursor:pointer;" onclick="filtrarResumenPorFA('${f.fa}')" title="Ver ${f.fa} en el reporte">
+                        <td style="padding:8px; font-weight:bold;">${f.fa}</td>
+                        <td style="padding:8px; text-align:right;">${f.total.toLocaleString('es-HN')}</td>
+                        <td style="padding:8px; text-align:right; color:#e65100;">${f.pendientes.toLocaleString('es-HN')}</td>
+                        <td style="padding:8px; text-align:right; color: var(--secondary-color);">${trabajados.toLocaleString('es-HN')}</td>
+                        <td style="padding:8px;">
+                            <div class="dash-progreso-track" style="width:100px; display:inline-block; vertical-align:middle;">
+                                <div class="dash-progreso-fill" style="width:${pct}%;"></div>
+                            </div>
+                            <span style="font-size:0.85em; color:#666; margin-left:6px;">${pct}%</span>
+                        </td>
+                    </tr>`;
+            }).join('');
+        }
+
+        function filtrarResumenPorFA(fa) {
+            const selectSucursal = document.getElementById('filter-sucursal');
+            if (selectSucursal) selectSucursal.value = fa;
+            actualizarTablaReporte();
         }
 
         function toggleFiltroRiesgoOtraFA() {
