@@ -466,11 +466,16 @@
                             <small id="politicas-status-msg" style="color: #e65100; font-weight: bold; display:block; margin-top: 5px;"></small>
                         </div>
 
-                        <h2>Carga Masiva Proximos a V (.xlsx)</h2>
-                        <div style="background-color: #f0f9eb; padding: 12px; border-radius: 6px; margin-bottom: 20px; border: 1px dashed #67c23a;">
-                            <button type="button" class="btn-download-masivo" onclick="exportarFormatoCargaMasiva()">📥 Descargar Plantilla / Datos (.xlsx)</button>
-                            <input type="file" id="productos-masivo-file-input" accept=".xlsx, .xls" style="padding:5px; font-size:0.9em; background: white; border: 1px solid #bdc3c7; width:100%; border-radius:4px; margin-top:5px;">
-                            <small id="productos-masivo-status" style="color: #67c23a; font-weight: bold; display:block; margin-top: 5px;"></small>
+                        <div id="carga-masiva-productos-container">
+                            <h2>Carga Masiva Proximos a V (.xlsx)</h2>
+                            <div style="background-color: #f0f9eb; padding: 12px; border-radius: 6px; margin-bottom: 20px; border: 1px dashed #67c23a;">
+                                <button type="button" class="btn-download-masivo" onclick="exportarFormatoCargaMasiva()">📥 Descargar Plantilla / Datos (.xlsx)</button>
+                                <input type="file" id="productos-masivo-file-input" accept=".xlsx, .xls" style="padding:5px; font-size:0.9em; background: white; border: 1px solid #bdc3c7; width:100%; border-radius:4px; margin-top:5px;">
+                                <small id="productos-masivo-status" style="color: #67c23a; font-weight: bold; display:block; margin-top: 5px;"></small>
+                                <small id="carga-masiva-aviso-admin" style="display:none; color:#b78103; font-weight:bold; margin-top:5px;">
+                                    ⚠️ Como Admin, solo puede cargar registros del mes actual. Los registros de meses anteriores requieren permiso de Super Usuario.
+                                </small>
+                            </div>
                         </div>
 
                         <h2>Carga Masiva de Reporte Ventas (.xlsx)</h2>
@@ -508,7 +513,7 @@
                                 <select id="new-role" required onchange="actualizarVisibilidadFANuevoUsuario()">
                                     <option value="User">Usuario Normal</option>
                                     <option value="Admin">Administrador</option>
-                                    <option value="SuperAdmin">Super Usuario</option>
+                                    <option value="SuperAdmin" id="opt-superadmin">Super Usuario</option>
                                 </select>
                             </div>
                             <div class="form-group" id="new-fa-group">
@@ -634,7 +639,7 @@
 
     <script>
         // URL ACTUALIZADA
-        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwHjpoTVM4nfzM4PNNJk8pGID4a72ND1IXztWc5vt4L1mw31agK5M9VKLDORdPK8sP9/exec";
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbz-SzsQU8u_WH7FZgJh_AtEMgYKAfV2GW_DpVjyYzHVgZjITpiQnR-LsjMBkt0c1KEp/exec";
 
         let listadoProductos = [];
         let mapaProductosLaboratorios = {}; 
@@ -1288,6 +1293,17 @@
             const file = e.target.files[0];
             if (!file) return;
 
+            if (!usuarioActual || !esAdminOSuperior(usuarioActual)) {
+                alert('No tiene permiso para usar la Carga Masiva de Próximos a Vencer.');
+                e.target.value = '';
+                return;
+            }
+
+            const puedeCargarMesesAnteriores = esSuperUsuario(usuarioActual);
+            const hoy = new Date();
+            const anioActual = hoy.getFullYear();
+            const mesActual = hoy.getMonth(); // 0-indexado
+
             const reader = new FileReader();
             reader.onload = function(evt) {
                 try {
@@ -1299,6 +1315,7 @@
 
                     let nuevosRegistrosCargados = 0;
                     let nuevosRegistrosArray = [];
+                    let registrosRechazadosPorMes = 0;
 
                     registros.forEach((reg, index) => {
                         let sucursal = reg['Sucursal'] ? reg['Sucursal'].toString().trim().toUpperCase() : "";
@@ -1370,6 +1387,18 @@
                                 mesRegistroTexto = nMesReg.charAt(0).toUpperCase() + nMesReg.slice(1);
                             }
 
+                            // Un Admin normal solo puede cargar registros del mes en curso.
+                            // Si la fecha de registro cae en un mes anterior, se rechaza esa
+                            // fila salvo que quien esté subiendo el archivo sea Super Usuario.
+                            if (!puedeCargarMesesAnteriores && parsedRegDate && !isNaN(parsedRegDate)) {
+                                const esMesAnterior = (parsedRegDate.getFullYear() < anioActual) ||
+                                    (parsedRegDate.getFullYear() === anioActual && parsedRegDate.getMonth() < mesActual);
+                                if (esMesAnterior) {
+                                    registrosRechazadosPorMes++;
+                                    return;
+                                }
+                            }
+
                             let estadoRecuperacion = evaluarEstadoRecuperacion(proveedor, laboratorio);
 
                             let itemNuevo = {
@@ -1387,8 +1416,15 @@
                     localStorage.setItem('vencidos', JSON.stringify(globalVencidos));
                     actualizarSelectProveedores(document.getElementById('prod-prov').value);
                     actualizarTablaReporte();
-                    document.getElementById('productos-masivo-status').innerText = `✓ ¡Éxito! Se inyectaron al reporte ${nuevosRegistrosCargados} filas trabajadas desde el Excel.`;
-                    alert(`¡Carga masiva finalizada con éxito!\nSe añadieron ${nuevosRegistrosCargados} registros analizados según su proveedor/viñeta.`);
+
+                    let mensajeStatus = `✓ ¡Éxito! Se inyectaron al reporte ${nuevosRegistrosCargados} filas trabajadas desde el Excel.`;
+                    let mensajeAlerta = `¡Carga masiva finalizada con éxito!\nSe añadieron ${nuevosRegistrosCargados} registros analizados según su proveedor/viñeta.`;
+                    if (registrosRechazadosPorMes > 0) {
+                        mensajeStatus += ` (${registrosRechazadosPorMes} de mes(es) anterior(es) omitidos, requieren Super Usuario)`;
+                        mensajeAlerta += `\n\n⚠️ ${registrosRechazadosPorMes} registro(s) de meses anteriores fueron omitidos: solo el Super Usuario puede cargarlos.`;
+                    }
+                    document.getElementById('productos-masivo-status').innerText = mensajeStatus;
+                    alert(mensajeAlerta);
                     document.getElementById('productos-masivo-file-input').value = "";
 
                     if (nuevosRegistrosArray.length > 0) {
@@ -1650,6 +1686,16 @@
                     document.getElementById('admin-filters-container').style.display = 'none';
                     document.getElementById('tip-modal-msg').style.display = 'none';
                 }
+
+                // La Carga Masiva de Próximos a Vencer la puede usar cualquier Admin+,
+                // pero solo el Super Usuario puede incluir registros de meses anteriores
+                // (el aviso se muestra a Admin normal para que sepa la limitación).
+                document.getElementById('carga-masiva-productos-container').style.display = esAdminOSuperior(cuenta) ? 'block' : 'none';
+                document.getElementById('carga-masiva-aviso-admin').style.display = (esAdminOSuperior(cuenta) && !esSuperUsuario(cuenta)) ? 'block' : 'none';
+
+                // Solo un Super Usuario puede crear nuevas cuentas de Super Usuario.
+                const optSuperAdmin = document.getElementById('opt-superadmin');
+                if (optSuperAdmin) optSuperAdmin.disabled = !esSuperUsuario(cuenta);
                 document.getElementById('th-acciones-reporte').style.display = esSuperUsuario(cuenta) ? 'table-cell' : 'none';
 
                 // Admin y User quedan atados a su FA asignada: el campo se
@@ -1991,10 +2037,11 @@
             if (!nuevoUser || !nuevaPass) return alert('Usuario y contraseña son obligatorios.');
             if (usuariosCache.some(u => u.usuario.toLowerCase() === nuevoUser.toLowerCase())) { return alert('El nombre de usuario ya existe.'); }
             if (nuevoRol !== 'SuperAdmin' && !nuevaFA) { return alert('Debe asignar una FA al usuario (obligatoria para Admin y Usuario Normal).'); }
+            if (nuevoRol === 'SuperAdmin' && !esSuperUsuario(usuarioActual)) { return alert('Solo un Super Usuario puede crear cuentas de Super Usuario.'); }
 
             document.getElementById('user-form').reset();
             actualizarVisibilidadFANuevoUsuario();
-            await enviarAccionUsuarioASheets({ action: "crearUsuario", usuario: nuevoUser, contrasena: nuevaPass, rol: nuevoRol, sucursal: nuevaFA });
+            await enviarAccionUsuarioASheets({ action: "crearUsuario", usuario: nuevoUser, contrasena: nuevaPass, rol: nuevoRol, sucursal: nuevaFA, solicitante: usuarioActual ? usuarioActual.usuario : "" });
         }
 
         function actualizarTablaUsuarios() {
@@ -2021,7 +2068,12 @@
             else if (usuario.rol === 'Admin') nuevoRol = 'SuperAdmin';
             else nuevoRol = 'User';
 
-            await enviarAccionUsuarioASheets({ action: "actualizarRolUsuario", usuario: usuario.usuario, rol: nuevoRol });
+            if (nuevoRol === 'SuperAdmin' && !esSuperUsuario(usuarioActual)) {
+                alert('Solo un Super Usuario puede ascender a otro usuario a Super Usuario.');
+                return;
+            }
+
+            await enviarAccionUsuarioASheets({ action: "actualizarRolUsuario", usuario: usuario.usuario, rol: nuevoRol, solicitante: usuarioActual ? usuarioActual.usuario : "" });
             actualizarTablaReporte();
         }
 
